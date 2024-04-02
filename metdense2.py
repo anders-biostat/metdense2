@@ -2,6 +2,7 @@ import os, math, json, sys, enum
 import numpy as np
 import numba, numba.experimental
 
+
 _Chromosome_spec = [
     ( 'posv', numba.uint32[:] ),
     ( 'datv', numba.uint32[:] ),
@@ -47,27 +48,6 @@ class Chromosome( object ):
         return call
     
 
-    def count( self ):
-        counts_u = np.zeros( len(self.posv), dtype=np.uint32 )
-        counts_m = np.zeros( len(self.posv), dtype=np.uint32 )
-
-        for site_idx in range( len(self.posv) ):
-            for cell_idx in range(self.ncells):
-                dword = self.datv[ site_idx * self.dwords_per_site + cell_idx // 16 ]
-                dword >>= 2*( cell_idx % 16 )
-                call = dword & 3
-                if call == 3:
-                    raise ValueError( "ambiguous call" )
-                elif call == 1:
-                    counts_u[site_idx] += 1
-                elif call == 2:
-                    counts_m[site_idx] += 1
-                else:
-                    assert call == 0
-
-        return counts_u, counts_m
-
-
     def smooth( self, hw ):
 
         counts_u, counts_m = self.count()
@@ -94,39 +74,47 @@ class Chromosome( object ):
             self.smoothed[i] = float(num) / float(den) # ( num + 1 ) / ( den + 1 )
 
 
-    def find_site( self, pos, side = Direction.exact ):
-        if side == Direction.left:
-            return np.searchsorted( self.posv, pos )
-        elif side == Direction.right:
-            return np.searchsorted( self.posv, pos, "right" ) 
-        elif side == Direction.exact:
-            idx = np.searchsorted( self.posv, pos )
-            if self.posv[idx] != pos:
-                raise RuntimeError( "Site not found." )
-        else:
-            raise TypeError( "Invalid 'side' argument." )
-
-
-
-    def sum_residuals( self, start_pos, end_pos, cell_idcs ):
+    def bin_residual_sums( self, cell_idcs, binwidth=200 ):
         
+        vals = np.zeros( 1<<20 )
         num = np.zeros( len(cell_idcs) )
         den = np.zeros( len(cell_idcs) )
-        site_idx = np.searchsorted( self.posv, start_pos )
-        while site_idx < end_pos:
-            for cell_idx in cell_idcs:
-                call = self.get( site_idx, cell_idx )
-                if call == 0 or call == 3:
-                    continue
-                elif call == 1:
-                    num[cell_idx] += - self.smoothed[ site_idx ]
-                elif call == 2:
-                    num[cell_idx] += 1 - self.smoothed[ site_idx ]
-                else:
-                    assert False
-                den[cell_idx] += 1
-            site_idx += 1
-        return ( num + 1 ) / den
+        site_idx = 0
+        for i in range( 1<<20 ):
+            num[:] = 0
+            den[:] = 0
+            while site_idx < len(self.posv) and self.posv[site_idx] < binwidth * (i+1):
+                for j in range(len(cell_idcs)):
+                    call = self.get( site_idx, cell_idcs[j] )
+                    if call == 0 or call == 3:
+                        continue
+                    elif call == 1:
+                        num[j] += - self.smoothed[ site_idx ]
+                    elif call == 2:
+                        num[j] += 1 - self.smoothed[ site_idx ]
+                    else:
+                        assert False
+                    den[j] += 1
+                site_idx += 1
+            vals[i] = ( num / ( den + 1 ) ).mean()
+
+        return vals
+
+    def bin_smoothed( self, binwidth=200 ):
+        
+        vals = np.zeros( 1<<20 )
+        site_idx = 0
+        for i in range( 1<<20 ):
+            num = 0.
+            den = 0.
+            while site_idx < len(self.posv) and self.posv[site_idx] < binwidth * (i+1):
+                num += self.smoothed[site_idx]
+                den += 1
+                site_idx += 1        
+            vals[i] = num / den if den > 0 else math.nan
+
+        return vals
+
 
 
 class MetdenseDataset( object ):
