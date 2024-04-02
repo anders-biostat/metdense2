@@ -1,4 +1,4 @@
-import os, math, json, sys
+import os, math, json, sys, enum
 import numpy as np
 import numba, numba.experimental
 
@@ -10,6 +10,18 @@ _Chromosome_spec = [
     ( 'dwords_per_site', numba.uint32 ),
     ( 'smoothed', numba.double[:] ) ]
 
+class Direction( enum.IntEnum ):
+    left = -1
+    exact = 0
+    right = 1
+
+class MethCall( enum.IntEnum ):
+    nocall = 0
+    unmeth = 1
+    meth = 2
+    ambig = 3
+
+
 @numba.experimental.jitclass( _Chromosome_spec )
 class Chromosome( object ):
 
@@ -17,9 +29,16 @@ class Chromosome( object ):
         with numba.objmode():
             self.posv = np.memmap( os.path.join( dir, name + ".pos" ), np.uint32 )
             self.datv = np.memmap( os.path.join( dir, name + ".dat" ), np.uint32 )
+            if os.path.isfile( os.path.join( dir, name + ".smd" ) ):
+                mode = "r+"
+            else:
+                mode = "w+"
+            self.smoothed = np.memmap( os.path.join( dir, name + ".smd" ), np.double, 
+                shape=(len(self.posv),), mode=mode )
             self.ncells = ncells
             self.chrom_len = chrom_len
             self.dwords_per_site = math.ceil( self.ncells / 16 )
+
 
     def get( self, site_idx, cell_idx ):
         dword = self.datv[ site_idx * self.dwords_per_site + cell_idx // 16 ]
@@ -27,6 +46,7 @@ class Chromosome( object ):
         call = dword & 3
         return call
     
+
     def count( self ):
         counts_u = np.zeros( len(self.posv), dtype=np.uint32 )
         counts_m = np.zeros( len(self.posv), dtype=np.uint32 )
@@ -47,9 +67,8 @@ class Chromosome( object ):
 
         return counts_u, counts_m
 
-    def smooth( self, hw=1000 ):
 
-        self.smoothed = np.zeros( len(self.posv), dtype=np.double )
+    def smooth( self, hw ):
 
         counts_u, counts_m = self.count()
 
@@ -57,7 +76,7 @@ class Chromosome( object ):
         right = 0
         for i in range( len(self.posv) ):
 
-            curpos = float(self.posv[i])
+            curpos = self.posv[i]
 
             while left < len(self.posv) and self.posv[left] < curpos - hw:
                 left += 1
@@ -72,10 +91,42 @@ class Chromosome( object ):
                 kernel_weight = ( 1 - abs(dist)**3 )**3
                 num += counts_m[j] / ( counts_m[j] + counts_u[j] ) * kernel_weight
                 den += kernel_weight
-            self.smoothed[i] = ( num + 1 ) / ( den + 1 )
+            self.smoothed[i] = float(num) / float(den) # ( num + 1 ) / ( den + 1 )
+
+
+    def find_site( self, pos, side = Direction.exact ):
+        if side == Direction.left:
+            return np.searchsorted( self.posv, pos )
+        elif side == Direction.right:
+            return np.searchsorted( self.posv, pos, "right" ) 
+        elif side == Direction.exact:
+            idx = np.searchsorted( self.posv, pos )
+            if self.posv[idx] != pos:
+                raise RuntimeError( "Site not found." )
+        else:
+            raise TypeError( "Invalid 'side' argument." )
 
 
 
+    def sum_residuals( self, start_pos, end_pos, cell_idcs ):
+        
+        num = np.zeros( len(cell_idcs) )
+        den = np.zeros( len(cell_idcs) )
+        site_idx = np.searchsorted( self.posv, start_pos )
+        while site_idx < end_pos:
+            for cell_idx in cell_idcs:
+                call = self.get( site_idx, cell_idx )
+                if call == 0 or call == 3:
+                    continue
+                elif call == 1:
+                    num[cell_idx] += - self.smoothed[ site_idx ]
+                elif call == 2:
+                    num[cell_idx] += 1 - self.smoothed[ site_idx ]
+                else:
+                    assert False
+                den[cell_idx] += 1
+            site_idx += 1
+        return ( num + 1 ) / den
 
 
 class MetdenseDataset( object ):
@@ -91,22 +142,48 @@ class MetdenseDataset( object ):
         for chr in self.info["chromosomes"].keys():
             self.chroms[chr] = Chromosome( metdense_dir, chr, self.ncells, self.info["chromosomes"][chr] )
 
+
     def __getitem__( self, idx ):
         chr, site_idx, cell_idx = idx
         return self.chroms[chr].get( site_idx, cell_idx )
+    
+
+    def smooth( self, hw=1000 ):
+        for chr in self.chroms:
+            print( chr )
+            self.chroms[chr].smooth( hw )
 
 
-md = MetdenseDataset( "scnmt_data__CpG_filtered.metdense" )
-print( md[ "Y", 0, 505 ] )
 
-md.chroms["Y"].smooth()
-print( md.chroms["Y"].smoothed )
+if __name__ == "__main__":
 
-sys.exit(0)
+    md = MetdenseDataset( "scnmt_data__CpG_filtered.metdense" )
 
-with open( os.path.join( "scnmt_data__CpG_filtered.metdense", "metadata.json" ) ) as f:
-    info = json.load(f)
+    binwidth = 200
 
-chrY = Chromosome( "scnmt_data__CpG_filtered.metdense", "Y", len( info["cells"] ), -1 )
-print( chrY.get( 0, 505 ) )
-print( chrY.count() )
+
+
+
+    sys.exit(0)
+
+    print( md[ "Y", 0, 505 ] )
+
+    print( md.chroms["Y"].posv )
+
+    print( md.chroms["Y"].find_site( 114340, Direction.right ) )
+
+    print( md.chroms["Y"].sum_residuals( 114000, 130000, np.arange(md.ncells) ) )
+
+    sys.exit(0)
+
+    md.smooth()
+    print( md.chroms["Y"].smoothed )
+
+    sys.exit(0)
+
+    with open( os.path.join( "scnmt_data__CpG_filtered.metdense", "metadata.json" ) ) as f:
+        info = json.load(f)
+
+    chrY = Chromosome( "scnmt_data__CpG_filtered.metdense", "Y", len( info["cells"] ), -1 )
+    print( chrY.get( 0, 505 ) )
+    print( chrY.count() )
