@@ -50,7 +50,7 @@ def convert_npz( npz_filename, outdir, out_filename_prefix, ncells ):
         if indptr[i] == indptr[i+1]:
             continue
 
-        fpos.write( struct.pack( 'I', i ) )        
+        fpos.write( struct.pack( 'I', i-1 ) )    # here, we fix that the old format is one-based
         convert_npz_inner( indptr, indices, data, i, buf )
         buf.tofile( fdat )
 
@@ -63,6 +63,7 @@ def convert_npz( npz_filename, outdir, out_filename_prefix, ncells ):
 
 indir = sys.argv[1] #"/home/anders/tmp/scbs_npz"
 outdir = sys.argv[2] #"testdata"
+genome_id = sys.argv[3]
 
 with open( os.path.join( indir, "column_header.txt" ) ) as f:
     cellnames = f.readlines()
@@ -80,8 +81,11 @@ for fn in os.listdir( indir ):
 
 with open( os.path.join( outdir, "metadata.json" ), "w" ) as f:
     json.dump( 
-        { "format": "metdense", "format-version": "0.0.-1", 
-           "cells": cellnames, "chromosomes": chromlens },
+        { "format": "metdense", 
+          "format-version": "0.0.-1", 
+          "genome": genome_id, 
+          "cells": cellnames, 
+          "chromosomes": chromlens },
         f, indent=3 )
 
 print( "finished" )
