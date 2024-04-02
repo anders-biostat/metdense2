@@ -47,6 +47,26 @@ class Chromosome( object ):
         call = dword & 3
         return call
     
+    
+    def count( self ):
+        counts_u = np.zeros( len(self.posv), dtype=np.uint32 )
+        counts_m = np.zeros( len(self.posv), dtype=np.uint32 )
+        for site_idx in range( len(self.posv) ):
+            for cell_idx in range(self.ncells):
+                dword = self.datv[ site_idx * self.dwords_per_site + cell_idx // 16 ]
+                dword >>= 2*( cell_idx % 16 )
+                call = dword & 3
+                if call == 3:
+                    raise ValueError( "ambiguous call" )
+                elif call == 1:
+                    counts_u[site_idx] += 1
+                elif call == 2:
+                    counts_m[site_idx] += 1
+                else:
+                    assert call == 0
+
+        return counts_u, counts_m    
+
 
     def smooth( self, hw ):
 
